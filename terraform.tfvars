@@ -1,0 +1,8 @@
+aws_region    = "us-east-1"
+app_name      = "sample-app"
+github_owner  = "vaidyav23-stack"
+github_repo   = "ecs-pipeline"
+github_branch = "main"
+github_token_path = "/github/token"
+sonar_host_url = "https://sonarcloud.io"
+sonar_token   = "/sonar/token"

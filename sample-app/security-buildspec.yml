@@ -1,0 +1,77 @@
+version: 0.2
+phases:
+  install:
+    runtime-versions:
+      nodejs: 18
+    commands:
+      # Install Trivy
+      - wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | apt-key add -
+      - echo "deb https://aquasecurity.github.io/trivy-repo/deb generic main" | tee -a /etc/apt/sources.list
+      - apt-get update && apt-get install -y trivy
+      
+      # Install OWASP Dependency Check
+      - wget https://github.com/jeremylong/DependencyCheck/releases/download/v8.4.0/dependency-check-8.4.0-release.zip
+      - unzip dependency-check-8.4.0-release.zip
+      
+      # Install SonarScanner
+      - wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.8.0.2856-linux.zip
+      - unzip sonar-scanner-cli-4.8.0.2856-linux.zip
+      - export PATH=$PATH:$(pwd)/sonar-scanner-4.8.0.2856-linux/bin
+
+  pre_build:
+    commands:
+      - echo Security scanning started on `date`
+      - npm install
+
+  build:
+    commands:
+      # OWASP Dependency Check
+      - echo "Running OWASP Dependency Check..."
+      - ./dependency-check/bin/dependency-check.sh --project "sample-app" --scan . --format JSON --out owasp-report.json || true
+      
+      # Trivy filesystem scan
+      - echo "Running Trivy filesystem scan..."
+      - trivy fs --format json --output trivy-fs-report.json . || true
+      
+      # SonarQube analysis
+      - echo "Running SonarQube analysis..."
+      - sonar-scanner \
+          -Dsonar.projectKey=sample-app \
+          -Dsonar.sources=. \
+          -Dsonar.host.url=$SONAR_HOST_URL \
+          -Dsonar.login=$SONAR_TOKEN \
+          -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info || true
+
+  post_build:
+    commands:
+      - echo Security scanning completed on `date`
+      - echo "Uploading security reports to S3..."
+      
+      # Upload reports to S3
+      - TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+      - |
+        if [ -f "owasp-report.json" ]; then
+          aws s3 cp owasp-report.json s3://$SECURITY_REPORTS_BUCKET/owasp/$TIMESTAMP-owasp-report.json
+        fi
+      - |
+        if [ -f "trivy-fs-report.json" ]; then
+          aws s3 cp trivy-fs-report.json s3://$SECURITY_REPORTS_BUCKET/trivy/$TIMESTAMP-trivy-fs-report.json
+        fi
+      
+      - echo "Checking for critical vulnerabilities..."
+      - |
+        if [ -f "owasp-report.json" ]; then
+          CRITICAL_COUNT=$(jq '.dependencies[].vulnerabilities[]? | select(.severity == "HIGH" or .severity == "CRITICAL") | length' owasp-report.json | wc -l)
+          echo "OWASP Critical/High vulnerabilities: $CRITICAL_COUNT"
+        fi
+      - |
+        if [ -f "trivy-fs-report.json" ]; then
+          TRIVY_CRITICAL=$(jq '.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL" or .Severity == "HIGH") | length' trivy-fs-report.json | wc -l)
+          echo "Trivy Critical/High vulnerabilities: $TRIVY_CRITICAL"
+        fi
+
+artifacts:
+  files:
+    - owasp-report.json
+    - trivy-fs-report.json
+  name: security-reports
